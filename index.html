@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Music Game by Skeletons (First on Flight)</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:Arial;}
+body{background:black;overflow:hidden;color:white;}
+canvas{display:block;}
+.screen{
+position:fixed;
+width:100%;
+height:100%;
+background:rgba(0,0,0,0.9);
+display:flex;
+flex-direction:column;
+justify-content:center;
+align-items:center;
+text-align:center;
+z-index:10;
+}
+button{padding:10px 20px;margin:10px;cursor:pointer; background: #444; color: white; border: none; border-radius: 5px;}
+button:hover{background: #666;}
+
+/* CONTENEDOR DE AVATARES */
+#avatarsContainer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+.avatar-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    margin-top: 10px;
+}
+.avatarBtn {
+    width: 70px;
+    height: 70px;
+    border: 3px solid #444;
+    cursor: pointer;
+    background: #222;
+    object-fit: contain;
+    border-radius: 10px;
+    transition: 0.2s;
+}
+.avatarBtn:hover { border-color: #888; transform: scale(1.05); }
+.avatarBtn.selected { border-color: #ffd54f; background: #444; box-shadow: 0 0 15px #ffd54f; }
+
+#scoreDisplay{position:fixed;top:15px;left:20px;font-weight:bold;z-index:5;}
+</style>
+</head>
+<body>
+
+<div id="menu" class="screen">
+<h1>Music Game by First on Flight</h1>
+<h2>(Skeletons)</h2>
+<h3>---------<h3>
+<h3>
+    Selecciona jugador</h3>
+<div id="playerList"></div>
+<input id="newPlayerName" placeholder="Nuevo jugador" style="padding: 10px; margin-top: 10px;">
+<button onclick="addPlayer()">Crear</button>
+</div>
+
+<div id="avatarSelectScreen" class="screen" style="display:none;">
+<h2>Selecciona tu Avatar</h2>
+<div id="avatarsContainer">
+    <canvas id="previewCanvas" width="150" height="150"></canvas>
+    <div class="avatar-grid" id="avatarGrid"></div>
+</div>
+<button onclick="startGame()" style="background: #4caf50; font-weight: bold; margin-top: 20px;">¡JUGAR!</button>
+</div>
+
+<div id="intro" class="screen" style="display:none;">
+<h2>Presiona ESPACIO para comenzar</h2>
+</div>
+
+<div id="gameOverScreen" class="screen" style="display:none;"></div>
+
+<div id="scoreDisplay">Tiempo: 0.0s</div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas=document.getElementById("gameCanvas");
+const ctx=canvas.getContext("2d");
+
+let W,H;
+function resize(){
+W=window.innerWidth;
+H=window.innerHeight;
+canvas.width=W;
+canvas.height=H;
+}
+window.addEventListener("resize",resize);
+resize();
+
+/* ================= AUDIO ================= */
+let audio=new Audio("song.mp3");
+audio.loop=false;
+audio.crossOrigin="anonymous";
+
+let audioContext, analyser, source, dataArray, bufferLength;
+let bass=0, treble=0, volume=0;
+
+function setupAudio(){
+audioContext=new (window.AudioContext||window.webkitAudioContext)();
+analyser=audioContext.createAnalyser();
+analyser.fftSize=1024;
+source=audioContext.createMediaElementSource(audio);
+source.connect(analyser);
+analyser.connect(audioContext.destination);
+bufferLength=analyser.frequencyBinCount;
+dataArray=new Uint8Array(bufferLength);
+}
+
+function analyzeAudio(){
+analyser.getByteFrequencyData(dataArray);
+let bassSum=0,trebleSum=0,total=0;
+for(let i=0;i<bufferLength;i++){
+let freq=i*(audioContext.sampleRate/2)/bufferLength;
+total+=dataArray[i];
+if(freq<250)bassSum+=dataArray[i];
+if(freq>2000)trebleSum+=dataArray[i];
+}
+volume=total/bufferLength/255;
+bass=bassSum/(bufferLength*255);
+treble=trebleSum/(bufferLength*255);
+}
+
+/* ================= IMÁGENES DE AVATAR (8 PNG) ================= */
+const avatarSources = ["p1.png", "p2.png", "p3.png", "p4.png", "p5.png", "p6.png", "p7.png", "p8.png"];
+const avatarImages = [];
+let selectedAvatarIndex = 0;
+
+// Precargar imágenes
+avatarSources.forEach((src, index) => {
+    const img = new Image();
+    img.src = src;
+    img.onload = () => { if(index === selectedAvatarIndex) updatePreview(); };
+    avatarImages.push(img);
+});
+
+const obstacleTopImg=new Image();
+obstacleTopImg.src="obstacleTop.png";
+const obstacleBottomImg=new Image();
+obstacleBottomImg.src="obstacleBottom.png";
+
+/* ================= IMAGEN DE FONDO ================= */
+const backgroundImg = new Image();
+backgroundImg.src = "background.png"; // ← nombre de tu archivo
+
+/* ================= SISTEMA DE JUGADORES ================= */
+let players=JSON.parse(localStorage.getItem("rhythmPlayers"))||[];
+let currentPlayer=null;
+
+function savePlayers(){ localStorage.setItem("rhythmPlayers",JSON.stringify(players)); }
+
+function renderPlayers(){
+const list=document.getElementById("playerList");
+list.innerHTML="";
+players.sort((a,b)=>b.bestTime-a.bestTime);
+players.forEach(p=>{
+const btn=document.createElement("button");
+btn.innerText=p.name+" - "+p.bestTime.toFixed(1)+"s";
+btn.onclick=()=>selectPlayer(p.name);
+list.appendChild(btn);
+});
+}
+
+function addPlayer(){
+const name=document.getElementById("newPlayerName").value.trim();
+if(!name)return;
+players.push({name:name,bestTime:0});
+savePlayers();
+renderPlayers();
+document.getElementById("newPlayerName").value="";
+}
+
+function selectPlayer(name){
+currentPlayer=players.find(p=>p.name===name);
+document.getElementById("menu").style.display="none";
+document.getElementById("avatarSelectScreen").style.display="flex";
+renderAvatarGrid();
+}
+
+/* ================= SELECCIÓN DE AVATAR ================= */
+function renderAvatarGrid() {
+    const grid = document.getElementById("avatarGrid");
+    grid.innerHTML = "";
+    
+    avatarImages.forEach((img, index) => {
+        const btn = document.createElement("img");
+        btn.src = img.src;
+        btn.className = "avatarBtn" + (selectedAvatarIndex === index ? " selected" : "");
+        btn.alt = "Avatar " + (index + 1);
+        btn.onclick = () => {
+            selectedAvatarIndex = index;
+            document.querySelectorAll('.avatarBtn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            updatePreview();
+        };
+        grid.appendChild(btn);
+    });
+    updatePreview();
+}
+
+function updatePreview() {
+    const pCanvas = document.getElementById("previewCanvas");
+    const pCtx = pCanvas.getContext("2d");
+    const img = avatarImages[selectedAvatarIndex];
+    
+    pCtx.clearRect(0,0, pCanvas.width, pCanvas.height);
+    if(img.complete && img.naturalWidth !== 0) {
+        let scale = (pCanvas.width * 0.8) / img.width;
+        let w = img.width * scale;
+        let h = img.height * scale;
+        pCtx.drawImage(img, (pCanvas.width-w)/2, (pCanvas.height-h)/2, w, h);
+    } else {
+        pCtx.fillStyle = "white";
+        pCtx.fillText("Imagen no encontrada", 20, 75);
+    }
+}
+
+renderPlayers();
+
+/* ================= MOTOR DEL JUEGO ================= */
+let player, obstacles=[];
+/* ================= HITBOX AJUSTABLE ================= */
+const PLAYER_HITBOX_SCALE = 0.20;   // Reduce hitbox del jugador (0.6–0.85 recomendado)
+const OBSTACLE_HITBOX_MARGIN = 8;   // Reduce ancho real del obstáculo
+let particles=[];
+let gameRunning=false;
+let gameStarted=false;
+let obstacleTimer=0;
+let startTime=0;
+
+function startGame(){
+    document.getElementById("avatarSelectScreen").style.display="none";
+    prepareGame();
+}
+
+function prepareGame(){
+    player={
+        x:W*0.2,
+        y:H/2,
+        size:H*0.06,
+        velocity:0,
+        gravity:H*0.0005,
+        jump:-H*0.015
+    };
+    obstacles=[];
+    gameRunning=true;
+    gameStarted=false;
+    document.getElementById("intro").style.display="flex";
+    requestAnimationFrame(loop);
+}
+
+document.addEventListener("keydown",async e=>{
+    if(e.code==="Space"){
+        if(gameRunning && !gameStarted){
+            document.getElementById("intro").style.display="none";
+            if(!audioContext)setupAudio();
+            await audioContext.resume();
+            audio.currentTime=0;
+            audio.play();
+            startTime=Date.now();
+            gameStarted=true;
+        } else if(gameStarted){
+            player.velocity=player.jump;
+        }
+    }
+});
+
+function createObstacle(){
+    let progress=audio.currentTime/audio.duration;
+    let baseGap=H*0.35;
+    let minGap=H*0.15;
+    let dynamicGap=baseGap-(progress*(baseGap-minGap));
+    let intensity=treble-bass;
+    let center=H/2-intensity*H;
+    center=Math.max(H*0.15,Math.min(H*0.85,center));
+
+    obstacles.push({
+        x:W,
+        width:W*0.07,
+        gap:dynamicGap,
+        center:center
+    });
+}
+
+function spawnParticles(){
+    particles.push({ x: player.x - player.size, y: player.y, size: Math.random()*3 + 1, life: 30 });
+}
+
+function updateParticles(){
+    for(let i=particles.length-1; i>=0; i--){
+        particles[i].x -= 3;
+        particles[i].life--;
+        if(particles[i].life <= 0) particles.splice(i,1);
+    }
+}
+
+function drawParticles(){
+    ctx.fillStyle="white";
+    particles.forEach(p=>{
+        ctx.globalAlpha = p.life/30;
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,p.size,0,Math.PI*2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+}
+
+function loop(){
+    if(!gameRunning) return;
+
+    if(backgroundImg.complete){
+        ctx.drawImage(backgroundImg, 0, 0, W, H);
+    }else{
+        ctx.fillStyle="black";
+        ctx.fillRect(0,0,W,H);
+    }
+
+    if(gameStarted) {
+        analyzeAudio();
+        player.velocity+=player.gravity;
+        player.y+=player.velocity;
+        spawnParticles();
+        updateParticles();
+        
+        obstacleTimer++;
+        if(obstacleTimer>80){
+            createObstacle();
+            obstacleTimer=0;
+        }
+    }
+
+    obstacles.forEach((ob,i)=>{
+        if(gameStarted) ob.x-=W*0.006;
+        let top=ob.center-ob.gap/2;
+        let bottom=ob.center+ob.gap/2;
+
+        if(obstacleTopImg.complete) {
+            let scale=ob.width/obstacleTopImg.naturalWidth;
+            ctx.drawImage(obstacleTopImg, ob.x, top-(obstacleTopImg.naturalHeight*scale), ob.width, obstacleTopImg.naturalHeight*scale);
+        }
+        if(obstacleBottomImg.complete) {
+            let scale=ob.width/obstacleBottomImg.naturalWidth;
+            ctx.drawImage(obstacleBottomImg, ob.x, bottom, ob.width, obstacleBottomImg.naturalHeight*scale);
+        }
+
+        /* ===== COLISIÓN CON HITBOX AJUSTADA ===== */
+
+let hitRadius = player.size * PLAYER_HITBOX_SCALE;
+
+let playerLeft   = player.x - hitRadius;
+let playerRight  = player.x + hitRadius;
+let playerTop    = player.y - hitRadius;
+let playerBottom = player.y + hitRadius;
+
+let obstacleLeft  = ob.x + OBSTACLE_HITBOX_MARGIN;
+let obstacleRight = ob.x + ob.width - OBSTACLE_HITBOX_MARGIN;
+
+if(
+    playerRight > obstacleLeft &&
+    playerLeft < obstacleRight &&
+    (playerTop < top || playerBottom > bottom)
+){
+    endGame();
+}
+    });
+
+    drawParticles();
+
+    /* ===== DIBUJAR AVATAR SELECCIONADO ===== */
+    const currentImg = avatarImages[selectedAvatarIndex];
+    if(currentImg.complete && currentImg.naturalWidth !== 0) {
+        let scale = (player.size * 2) / currentImg.width;
+        let h = currentImg.height * scale;
+        ctx.drawImage(currentImg, player.x-player.size, player.y-(h/2), player.size*2, h);
+    } else {
+        // Fallback si la imagen falla
+        ctx.fillStyle = "#ffd54f";
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.size, 0, Math.PI*2);
+        ctx.fill();
+    }
+
+    if(gameStarted){
+        let elapsed=(Date.now()-startTime)/1000;
+        document.getElementById("scoreDisplay").innerText="Tiempo: "+elapsed.toFixed(1)+"s";
+    }
+
+    requestAnimationFrame(loop);
+}
+
+function endGame(){
+    gameRunning=false;
+    audio.pause();
+    let time=(Date.now()-startTime)/1000;
+    if(currentPlayer && time>currentPlayer.bestTime){
+        currentPlayer.bestTime=time;
+        savePlayers();
+    }
+    const screen=document.getElementById("gameOverScreen");
+    screen.style.display="flex";
+    screen.innerHTML=
+    "<h1>Game Over</h1>"+
+    "<p>Tiempo: "+time.toFixed(1)+"s</p>"+
+    "<button onclick='restartSame()'>Reiniciar</button>"+
+    "<button onclick='changePlayer()'>Cambiar jugador</button>";
+    renderPlayers();
+}
+
+function restartSame(){
+    document.getElementById("gameOverScreen").style.display="none";
+    prepareGame();
+}
+
+function changePlayer(){
+    document.getElementById("gameOverScreen").style.display="none";
+    document.getElementById("menu").style.display="flex";
+    gameRunning=false;
+}
+</script>
+</body>
+</html>
